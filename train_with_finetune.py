@@ -2,11 +2,12 @@ import os
 import re
 import rouge
 import jieba
+import time
 import torch
 import argparse
 import numpy as np
 from tqdm.auto import tqdm
-from bert4torch.model import *
+from bert4torch.models import *
 from torch.utils.data import DataLoader, Dataset
 from torch._six import container_abcs, string_classes, int_classes
 from transformers import MT5ForConditionalGeneration, BertTokenizer
@@ -26,6 +27,9 @@ def load_data(filename):
             elif len(cur) == 1:
                 content = cur[0]
                 D.append(content)
+            elif len(cur) == 3:
+                title, content = cur[1], cur[0]
+                D.append((title, content))
     return D
 
 
@@ -194,8 +198,9 @@ def compute_rouges(sources, targets):
 
 
 def train_model(model, adam, train_data, dev_data, tokenizer, device, args):
-    if not os.path.exists(args.model_dir):
-        os.mkdir(args.model_dir)
+    args.save_dir = args.model_dir #+ '/' + str(time.strftime('%b%d%H%M%S', time.localtime()))
+    if not os.path.exists(args.save_dir):
+        os.mkdir(args.save_dir)
         
     best = 0
     for epoch in range(args.num_epoch):
@@ -244,10 +249,16 @@ def train_model(model, adam, train_data, dev_data, tokenizer, device, args):
         if rouge_l > best:
             best = rouge_l
             if args.data_parallel and torch.cuda.is_available():
-                torch.save(model.module, os.path.join(args.model_dir, 'summary_model'))
+                torch.save(model.module, os.path.join(args.save_dir, 'summary_model'))
             else:
-                torch.save(model, os.path.join(args.model_dir, 'summary_model'))
-        # torch.save(model, os.path.join(args.model_dir, 'summary_model_epoch_{}'.format(str(epoch))))
+                model.save_pretrained(args.save_dir)
+        output_dir = f"epoch_{epoch}"
+        output_dir = os.path.join(args.save_dir, output_dir)
+        if not os.path.exists(output_dir):
+            os.mkdir(output_dir)
+        with open(os.path.join(output_dir, "all_results.json"), "w") as f:
+            json.dump(scores, f)
+        model.save_pretrained(output_dir)
 
 
 def init_argument():
@@ -257,12 +268,12 @@ def init_argument():
     parser.add_argument('--pretrain_model', default='./t5_pegasus_pretrain')
     parser.add_argument('--model_dir', default='./saved_model')
     
-    parser.add_argument('--num_epoch', default=20, help='number of epoch')
-    parser.add_argument('--batch_size', default=16, help='batch size')
+    parser.add_argument('--num_epoch', default=5, type=int, help='number of epoch')
+    parser.add_argument('--batch_size', default=16, type=int, help='batch size')
     parser.add_argument('--lr', default=2e-4, help='learning rate')
     parser.add_argument('--data_parallel', default=False)
-    parser.add_argument('--max_len', default=512, help='max length of inputs')
-    parser.add_argument('--max_len_generate', default=40, help='max length of outputs')
+    parser.add_argument('--max_len', default=32, type=int, help='max length of inputs')
+    parser.add_argument('--max_len_generate', default=40, type=int, help='max length of outputs')
 
     args = parser.parse_args()
     return args

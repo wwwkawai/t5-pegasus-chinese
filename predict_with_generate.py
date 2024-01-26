@@ -32,6 +32,9 @@ def load_data(filename):
             elif len(cur) == 1:
                 content = cur[0]
                 D.append(content)
+            elif len(cur) == 3:
+                title, content = cur[1], cur[0]
+                D.append((title, content))
     return D
     
 
@@ -70,7 +73,7 @@ def create_data(data, tokenizer, max_len):
     """调用tokenizer.encode编码正文/标题，每条样本用dict表示数据域
     """
     ret, flag, title = [], True, None
-    for content in data:
+    for content in tqdm(data):
         if type(content) == tuple:
             title, content = content
         text_ids = tokenizer.encode(content, max_length=max_len,
@@ -208,6 +211,7 @@ def generate(test_data, model, tokenizer, args):
         model.eval()
         for feature in tqdm(test_data):
             raw_data = feature['raw_data']
+            title = feature['title']
             content = {k : v for k, v in feature.items() if k not in ['raw_data', 'title']} 
             gen = model.generate(max_length=args.max_len_generate,
                                 eos_token_id=tokenizer.sep_token_id,
@@ -215,7 +219,7 @@ def generate(test_data, model, tokenizer, args):
                                 **content)
             gen = tokenizer.batch_decode(gen, skip_special_tokens=True)
             gen = [item.replace(' ', '') for item in gen]
-            writer.writerows(zip(gen, raw_data))
+            writer.writerows(zip(gen, title, raw_data))
             gens.extend(gen)
             if 'title' in feature:
                 summaries.extend(feature['title'])
@@ -248,8 +252,8 @@ def init_argument():
     parser.add_argument('--model', default='./saved_model/summary_model')
 
     parser.add_argument('--batch_size', default=16, help='batch size')
-    parser.add_argument('--max_len', default=512, help='max length of inputs')
-    parser.add_argument('--max_len_generate', default=40, help='max length of generated text')
+    parser.add_argument('--max_len', default=512,type=int, help='max length of inputs')
+    parser.add_argument('--max_len_generate', default=40, type=int, help='max length of generated text')
     parser.add_argument('--use_multiprocess', default=False, action='store_true')
 
     args = parser.parse_args()
@@ -266,7 +270,7 @@ if __name__ == '__main__':
     test_data = prepare_data(args, tokenizer)
     
     # step 3. load finetuned model
-    model = torch.load(args.model, map_location=device)
+    model = MT5ForConditionalGeneration.from_pretrained(args.model).to(device)
 
     # step 4. predict
     res = []
