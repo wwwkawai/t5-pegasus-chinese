@@ -483,7 +483,7 @@ class StyleExtractor(MT5ForConditionalGeneration):
         anchor_embeds = self.encoder.embed_tokens(input_ids)
         if generate_ids is not None:
             gen_embeds = self.encoder.embed_tokens(generate_ids)
-            inputs_embeds = inputs_embeds + gen_embeds
+            inputs_embeds = inputs_embeds + (gen_embeds - inputs_embeds).detach()
         inputs_embeds = torch.cat((anchor_embeds,inputs_embeds),dim=1)
         outputs = self.encoder(
             attention_mask=attention_mask,

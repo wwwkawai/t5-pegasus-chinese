@@ -14,7 +14,7 @@ from transformers import MT5ForConditionalGeneration, BertTokenizer, MT5Config
 from model import StylePoem, StylePoemConfig, StyleExtractor
 import json
 from info_nce import InfoNCE, info_nce
-
+import random
 
 def load_data(filename):
     """加载数据
@@ -207,6 +207,13 @@ def compute_rouges(sources, targets):
     return {k: v / len(targets) for k, v in scores.items()}
 
 
+def shuffle(l):
+    for i in range(1,len(l)):
+        ind = random.randint(0,i-1)
+        l[i], l[ind] = l[ind], l[i]
+    return l
+
+
 def train_model(model, style_model, adam, train_data, dev_data, tokenizer, device, args):
     args.save_dir = args.model_dir #+ '/' + str(time.strftime('%b%d%H%M%S', time.localtime()))
     if not os.path.exists(args.save_dir):
@@ -218,7 +225,7 @@ def train_model(model, style_model, adam, train_data, dev_data, tokenizer, devic
         for i, cur in enumerate(tqdm(train_data, desc='Epoch {}:'.format(epoch))):
             cur = {k: v.to(device) for k, v in cur.items()}
             outputs = model(**cur)
-            prob, style_ref, style_repr, content_repr, content_ref, style_content_repr = outputs.logits, outputs.style_ref, outputs.style_repr, outputs.content_repr, outputs.content_ref, outputs.style_content_repr
+            prob = outputs.logits
             mask = cur['decoder_attention_mask'][:, 1:].reshape(-1).bool()
             # mask = mask[:,1:].reshape(-1).bool()
             prob = prob[:, :-1]
@@ -237,9 +244,14 @@ def train_model(model, style_model, adam, train_data, dev_data, tokenizer, devic
             #     loss = s_loss + c_loss
             # else:
             #     loss = s_loss + mlm_loss
+            gen_loss.backward()
+            adam.step()
+            adam.zero_grad()
             if i%args.freq == 0:
                 cur['shuffle'] = True
-                idx = torch.randperm(cur['input_ids'].shape[0])
+                idx = list(range(cur['input_ids'].shape[0]))
+                idx = shuffle(idx)
+                # idx = torch.randperm(cur['input_ids'].shape[0])
                 cur['input_ids_ref'] = cur['input_ids_ref'][idx, :]
                 cur['attention_mask_ref'] = cur['attention_mask_ref'][idx, :]
                 _cur = {k:v for k,v in cur.items() if k not in ['decoder_input_ids', 'decoder_attention_mask'] }
@@ -250,28 +262,28 @@ def train_model(model, style_model, adam, train_data, dev_data, tokenizer, devic
                         decoder_start_token_id=tokenizer.cls_token_id,
                         **_cur
                     )
+
                 token_attention_mask = (token_ids!=0).long()
+                # token_attention_mask = torch.ones_like(token_ids).long()
                 cur['decoder_input_ids'] = token_ids
                 cur['decoder_attention_mask'] = token_attention_mask
                 new_outputs = model(**cur)
                 hidden_states, content_repr, content_ref, style_content_repr = new_outputs.decoder_hidden_states, new_outputs.content_repr, new_outputs.content_ref, new_outputs.style_content_repr
                 anchorpos_mask = torch.cat((cur['attention_mask_ref'],token_attention_mask),dim=-1)
-                # logits = style_model.get_score(input_ids=cur['input_ids_ref'], generate_ids=token_ids, inputs_embeds=hidden_states, attention_mask=anchorpos_mask)
-                logits = style_model.get_score(input_ids=cur['input_ids_ref'],
-                                               inputs_embeds=hidden_states, attention_mask=anchorpos_mask)
+                logits = style_model.get_score(input_ids=cur['input_ids_ref'], generate_ids=token_ids, inputs_embeds=hidden_states, attention_mask=anchorpos_mask)
+                # logits = style_model.get_score(input_ids=cur['input_ids_ref'],
+                #                                inputs_embeds=hidden_states, attention_mask=anchorpos_mask)
                 score_fn = nn.Sigmoid()
                 scores = score_fn(logits)
-                s_loss = args.style_factor * torch.mean(1-scores)
+                s_loss = max(args.style_factor * torch.mean(0.7-scores), torch.tensor(0).cuda())
                 c_loss_fct = InfoNCE(negative_mode='paired')
                 c_loss = args.content_factor * c_loss_fct(content_repr, content_ref, style_content_repr.unsqueeze(1))
-                loss = s_loss + gen_loss + c_loss
-            else:
-                loss = gen_loss
+                loss = s_loss + c_loss
+                loss.backward()
+                adam.step()
+                adam.zero_grad()
             if i % 100 == 0:
                 print("Iter {}:  Training Loss: {},  MLM Loss: {},  Style Loss: {},  Content Loss: {}".format(i, loss.item(), gen_loss.item(), s_loss.item(), c_loss.item()))
-            loss.backward()
-            adam.step()
-            adam.zero_grad()
 
             # second step
             # idx = torch.randperm(style_ref.shape[0])
